@@ -2,12 +2,15 @@
 
 import os
 import re
+import json
+import subprocess
+import webvtt
+from io import StringIO
 from typing import List
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
@@ -27,6 +30,7 @@ load_dotenv()  # Loads the GEMINI_API_KEY from .env
 async def lifespan(app: FastAPI):
     create_db_and_tables()
     yield
+
 
 app = FastAPI(
     title="Debate Evaluation API",
@@ -83,7 +87,8 @@ class SpeakerAnalysis(BaseModel):
 class TranscriptLedgerItem(BaseModel):
     timestamp: str = Field(..., description="Formatted timestamp (HH:MM:SS or MM:SS).")
     speaker: str = Field(..., description="Identifier of the speaker who made the statement.")
-    category: str = Field(..., description="One of: Logical Point (L), Unrebutted Hit (U), Fallacy (F), Insinuation (I)")
+    category: str = Field(...,
+                          description="One of: Logical Point (L), Unrebutted Hit (U), Fallacy (F), Insinuation (I)")
     quote: str = Field(..., description="Verbatim or close excerpt from transcript.")
     score_change: float = Field(..., description="Numerical score contribution (+3, +2, -2, or -1.5).")
     impact_explanation: str = Field(..., description="Brief, objective explanation of why this point was scored.")
@@ -115,41 +120,60 @@ def extract_video_id(url_or_id: str) -> str:
 
 
 def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
-    """Fetch subtitles and format into timestamped text blocks for the LLM."""
-    try:
-        api = YouTubeTranscriptApi()
+    """Fetch subtitles using yt-dlp and format into timestamped text blocks for the LLM."""
+    url = f"https://www.youtube.com/watch?v={video_id}"
 
-        # Convert the object returned by fetch() into a list of dictionaries
-        transcript_obj = api.fetch(video_id, languages=['en'])
-        transcript_list = transcript_obj.to_raw_data()
+    cmd = [
+        "yt-dlp",
+        "--skip-download",
+        "--write-auto-sub",
+        "--write-sub",
+        "--sub-lang", "en",
+        "--sub-format", "vtt",
+        "--output", "-",
+        url
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        vtt_content = result.stdout
+
+        if not vtt_content.strip():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No English transcripts/subtitles available for this video."
+            )
 
         formatted_transcript = []
         total_duration = 0.0
 
-        for item in transcript_list:
-            start_sec = item['start']
-            duration = item['duration']
-            total_duration = max(total_duration, start_sec + duration)
+        for caption in webvtt.read_buffer(StringIO(vtt_content)):
+            # Normalize timestamp representation
+            time_str = caption.start.split('.')[0]  # Extracts HH:MM:SS
+            text_clean = caption.text.replace("\n", " ").strip()
 
-            # Convert seconds to MM:SS format
-            minutes, seconds = divmod(int(start_sec), 60)
-            hours, minutes = divmod(minutes, 60)
-            time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes:02d}:{seconds:02d}"
+            if text_clean:
+                formatted_transcript.append(f"[{time_str}] {text_clean}")
 
-            formatted_transcript.append(f"[{time_str}] {item['text']}")
+            # Estimate total duration from last timestamp
+            parts = [float(x) for x in time_str.split(':')]
+            if len(parts) == 3:
+                total_duration = max(total_duration, parts[0] * 3600 + parts[1] * 60 + parts[2])
+            elif len(parts) == 2:
+                total_duration = max(total_duration, parts[0] * 60 + parts[1])
 
         full_text = "\n".join(formatted_transcript)
         return full_text, total_duration
 
-    except (TranscriptsDisabled, NoTranscriptFound):
+    except subprocess.CalledProcessError as e:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Transcripts are disabled or unavailable in English for this video."
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"yt-dlp failed to fetch transcript: {e.stderr or str(e)}"
         )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve transcript: {str(e)}"
+            detail=f"Failed to process transcript: {str(e)}"
         )
 
 
@@ -163,12 +187,12 @@ def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
     summary="Analyze YouTube Debate Transcript",
     status_code=status.HTTP_200_OK
 )
-async def analyze_debate(payload: DebateRequest):
+async def analyze_debate(request: DebateRequest):
     """
     Accepts a YouTube link, fetches timestamped captions, and evaluates debate participants
     quantitatively using strict mathematical metrics and Gemini structured output.
     """
-    video_id = extract_video_id(payload.youtube_url)
+    video_id = extract_video_id(request.youtube_url)
 
     # 1. Check if video has already been analyzed in the database
     with Session(engine) as session:
@@ -184,7 +208,7 @@ async def analyze_debate(payload: DebateRequest):
                 transcript_ledger=existing_debate.ledger_data
             )
 
-    # 2. If not found in DB, fetch transcript and call Gemini
+    # 2. If not found in DB, fetch transcript using yt-dlp and call Gemini
     transcript_text, total_duration = fetch_and_format_transcript(video_id)
 
     # Immutable evaluation rules fed directly to Gemini
@@ -217,7 +241,7 @@ async def analyze_debate(payload: DebateRequest):
 
     try:
         response = ai_client.models.generate_content(
-            model='gemini-3.5-flash',
+            model='gemini-2.5-flash',
             contents=user_prompt,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
@@ -236,7 +260,7 @@ async def analyze_debate(payload: DebateRequest):
         with Session(engine) as session:
             db_record = Debate(
                 video_id=video_id,
-                youtube_url=payload.youtube_url,
+                youtube_url=request.youtube_url,
                 total_duration_seconds=total_duration,
                 speakers_data=[s.model_dump() for s in analysis_result.speakers],
                 ledger_data=[l.model_dump() for l in analysis_result.transcript_ledger]
