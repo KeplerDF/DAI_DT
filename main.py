@@ -4,15 +4,15 @@ import os
 import re
 from typing import List
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
-from fastapi import HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 from sqlmodel import Session, select
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+from youtube_transcript_api.proxies import WebshareProxyConfig, GenericProxyConfig
+from fastapi import HTTPException, status, FastAPI
 
 
 from database import engine, create_db_and_tables, get_session
@@ -119,15 +119,21 @@ def extract_video_id(url_or_id: str) -> str:
 
 
 def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
-    """
-    Fetches transcript using the updated YouTubeTranscriptApi syntax.
-    """
     try:
-        # 1. Instantiate the API client
-        ytt_api = YouTubeTranscriptApi()
+        username = os.getenv("WEBSHARE_USERNAME")
+        password = os.getenv("WEBSHARE_PASSWORD")
 
-        # 2. Fetch transcript using the new `.fetch()` method
-        #    (Passes 'en' and 'en-US' as preferred language options)
+        # Initialize API with proxy configuration if credentials exist
+        if username and password:
+            ytt_api = YouTubeTranscriptApi(
+                proxy_config=WebshareProxyConfig(
+                    proxy_username=username,
+                    proxy_password=password
+                )
+            )
+        else:
+            ytt_api = YouTubeTranscriptApi()
+
         transcript = ytt_api.fetch(video_id, languages=['en', 'en-US'])
 
         formatted_lines = []
@@ -138,16 +144,12 @@ def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
             duration = item.get('duration', 0.0)
             total_duration = max(total_duration, start_sec + duration)
 
-            # Format timestamp into HH:MM:SS or MM:SS
             start_int = int(start_sec)
             hours = start_int // 3600
             minutes = (start_int % 3600) // 60
             seconds = start_int % 60
 
-            if hours > 0:
-                time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-            else:
-                time_str = f"{minutes:02d}:{seconds:02d}"
+            time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}" if hours > 0 else f"{minutes:02d}:{seconds:02d}"
 
             text_clean = item['text'].replace('\n', ' ').strip()
             if text_clean:
