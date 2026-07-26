@@ -120,22 +120,25 @@ def extract_video_id(url_or_id: str) -> str:
 
 def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
     """
-    Fetches transcript/subtitles directly using YouTube's native timedtext API.
-    Bypasses yt-dlp cookie rotation and bot check issues.
+    Fetches transcript using the updated YouTubeTranscriptApi syntax.
     """
     try:
-        # Fetch transcript (tries explicit English or auto-generated English)
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'en-US'])
+        # 1. Instantiate the API client
+        ytt_api = YouTubeTranscriptApi()
+
+        # 2. Fetch transcript using the new `.fetch()` method
+        #    (Passes 'en' and 'en-US' as preferred language options)
+        transcript = ytt_api.fetch(video_id, languages=['en', 'en-US'])
 
         formatted_lines = []
         total_duration = 0.0
 
-        for item in transcript_list:
+        for item in transcript:
             start_sec = item['start']
             duration = item.get('duration', 0.0)
             total_duration = max(total_duration, start_sec + duration)
 
-            # Convert floating seconds to HH:MM:SS format
+            # Format timestamp into HH:MM:SS or MM:SS
             start_int = int(start_sec)
             hours = start_int // 3600
             minutes = (start_int % 3600) // 60
@@ -155,7 +158,7 @@ def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
     except (TranscriptsDisabled, NoTranscriptFound):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No English transcripts/subtitles available for this video."
+            detail="No English transcripts available for this video."
         )
     except Exception as e:
         raise HTTPException(
