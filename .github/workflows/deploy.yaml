@@ -26,19 +26,22 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: "npm"
+          cache-dependency-path: "debate-frontend/package-lock.json"
 
       - name: Install dependencies
         run: npm ci
+        working-directory: ./debate-frontend
 
       - name: Build static export
         run: npm run build
+        working-directory: ./debate-frontend
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ./debate-frontend/out # Next.js static export folder
+          path: ./debate-frontend/out
 
       - name: Deploy to GitHub Pages
         id: deployment
