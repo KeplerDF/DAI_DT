@@ -2,7 +2,7 @@ name: Deploy Next.js to GitHub Pages
 
 on:
   push:
-    branches: ["main"] # Runs automatically whenever you push to main
+    branches: ["master"] # Runs automatically whenever you push to master
   workflow_dispatch:   # Allows manual trigger from the Actions tab
 
 # Grants necessary GITHUB_TOKEN permissions to deploy pages
