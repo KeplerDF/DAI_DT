@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
+from python.Lib import tempfile
 from sqlmodel import Session, select
 
 from database import engine, create_db_and_tables, get_session
@@ -130,9 +131,23 @@ def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
         "--write-sub",
         "--sub-lang", "en",
         "--sub-format", "vtt",
+        "--extractor-args", "youtube:player_client=android,web",
         "--output", "-",
         url
     ]
+
+    cookies_env = os.getenv("YOUTUBE_COOKIES")
+    if cookies_env:
+        temp_cookie_file = tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".txt")
+        temp_cookie_file.write(cookies_env)
+        temp_cookie_file.close()
+        cookies_path = temp_cookie_file.name
+        cmd.extend(["--cookies", cookies_path])
+    else:
+        # Fallback to client spoofing if cookies aren't set
+        cmd.extend(["--extractor-args", "youtube:player_client=android,web"])
+
+    cmd.append(url)
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -148,14 +163,12 @@ def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
         total_duration = 0.0
 
         for caption in webvtt.read_buffer(StringIO(vtt_content)):
-            # Normalize timestamp representation
-            time_str = caption.start.split('.')[0]  # Extracts HH:MM:SS
+            time_str = caption.start.split('.')[0]
             text_clean = caption.text.replace("\n", " ").strip()
 
             if text_clean:
                 formatted_transcript.append(f"[{time_str}] {text_clean}")
 
-            # Estimate total duration from last timestamp
             parts = [float(x) for x in time_str.split(':')]
             if len(parts) == 3:
                 total_duration = max(total_duration, parts[0] * 3600 + parts[1] * 60 + parts[2])
@@ -170,11 +183,10 @@ def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"yt-dlp failed to fetch transcript: {e.stderr or str(e)}"
         )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to process transcript: {str(e)}"
-        )
+    finally:
+        # Cleanup temporary cookie file after execution
+        if cookies_path and os.path.exists(cookies_path):
+            os.remove(cookies_path)
 
 
 # -------------------------------------------------------------------
