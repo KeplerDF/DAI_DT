@@ -2,13 +2,11 @@
 
 import os
 import re
-import subprocess
-import webvtt
-import tempfile
-from io import StringIO
 from typing import List
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+from fastapi import HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from google import genai
@@ -121,72 +119,49 @@ def extract_video_id(url_or_id: str) -> str:
 
 
 def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
-    url = f"https://www.youtube.com/watch?v={video_id}"
-
-    cookies_path = None
-    cmd = [
-        "yt-dlp",
-        "--skip-download",
-        "--write-auto-sub",
-        "--write-sub",
-        "--sub-lang", "en",
-        "--sub-format", "vtt",
-        "--extractor-args", "youtube:player_client=android,ios,web",
-        "--output", "-",
-    ]
-
-    # Process Render's env variable to rebuild line breaks correctly
-    cookies_env = os.getenv("YOUTUBE_COOKIES")
-    if cookies_env:
-        # Convert escaped \n strings or spaces into proper system newlines
-        clean_cookies = cookies_env.replace('\\n', '\n')
-
-        # Write to temp file with newline encoding guaranteed for Linux
-        temp_cookie_file = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt", newline="\n")
-        temp_cookie_file.write(clean_cookies)
-        temp_cookie_file.close()
-
-        cookies_path = temp_cookie_file.name
-        cmd.extend(["--cookies", cookies_path])
-
-    cmd.append(url)
-
+    """
+    Fetches transcript/subtitles directly using YouTube's native timedtext API.
+    Bypasses yt-dlp cookie rotation and bot check issues.
+    """
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        vtt_content = result.stdout
+        # Fetch transcript (tries explicit English or auto-generated English)
+        transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'en-US'])
 
-        if not vtt_content.strip():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="No English transcripts available for this video."
-            )
-
-        formatted_transcript = []
+        formatted_lines = []
         total_duration = 0.0
 
-        for caption in webvtt.read_buffer(StringIO(vtt_content)):
-            time_str = caption.start.split('.')[0]
-            text_clean = caption.text.replace("\n", " ").strip()
+        for item in transcript_list:
+            start_sec = item['start']
+            duration = item.get('duration', 0.0)
+            total_duration = max(total_duration, start_sec + duration)
 
+            # Convert floating seconds to HH:MM:SS format
+            start_int = int(start_sec)
+            hours = start_int // 3600
+            minutes = (start_int % 3600) // 60
+            seconds = start_int % 60
+
+            if hours > 0:
+                time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+            else:
+                time_str = f"{minutes:02d}:{seconds:02d}"
+
+            text_clean = item['text'].replace('\n', ' ').strip()
             if text_clean:
-                formatted_transcript.append(f"[{time_str}] {text_clean}")
+                formatted_lines.append(f"[{time_str}] {text_clean}")
 
-            parts = [float(x) for x in time_str.split(':')]
-            if len(parts) == 3:
-                total_duration = max(total_duration, parts[0] * 3600 + parts[1] * 60 + parts[2])
-            elif len(parts) == 2:
-                total_duration = max(total_duration, parts[0] * 60 + parts[1])
+        return "\n".join(formatted_lines), total_duration
 
-        return "\n".join(formatted_transcript), total_duration
-
-    except subprocess.CalledProcessError as e:
+    except (TranscriptsDisabled, NoTranscriptFound):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No English transcripts/subtitles available for this video."
+        )
+    except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"yt-dlp failed to fetch transcript: {e.stderr or str(e)}"
+            detail=f"Failed to fetch transcript: {str(e)}"
         )
-    finally:
-        if cookies_path and os.path.exists(cookies_path):
-            os.remove(cookies_path)
 
 
 # -------------------------------------------------------------------
