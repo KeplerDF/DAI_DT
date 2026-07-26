@@ -2,9 +2,9 @@
 
 import os
 import re
-import json
 import subprocess
 import webvtt
+import tempfile
 from io import StringIO
 from typing import List
 from contextlib import asynccontextmanager
@@ -16,6 +16,7 @@ from google.genai import types
 from dotenv import load_dotenv
 from python.Lib import tempfile
 from sqlmodel import Session, select
+
 
 from database import engine, create_db_and_tables, get_session
 from models import Debate
@@ -121,8 +122,12 @@ def extract_video_id(url_or_id: str) -> str:
 
 
 def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
-    """Fetch subtitles using yt-dlp and format into timestamped text blocks for the LLM."""
     url = f"https://www.youtube.com/watch?v={video_id}"
+
+    # Path to node executable installed during build step
+    node_path = os.path.abspath("node_bin/bin/node")
+    if not os.path.exists(node_path):
+        node_path = os.path.abspath("node_bin/node")
 
     cmd = [
         "yt-dlp",
@@ -131,11 +136,15 @@ def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
         "--write-sub",
         "--sub-lang", "en",
         "--sub-format", "vtt",
-        "--extractor-args", "youtube:player_client=android,web",
+        "--extractor-args", "youtube:player_client=android,web,ios",
         "--output", "-",
-        url
     ]
 
+    # Explicitly pass JS runtime path to yt-dlp if installed
+    if os.path.exists(node_path):
+        cmd.extend(["--js-runtimes", f"node:{node_path}"])
+
+    cookies_path = None
     cookies_env = os.getenv("YOUTUBE_COOKIES")
     if cookies_env:
         temp_cookie_file = tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".txt")
@@ -143,9 +152,6 @@ def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
         temp_cookie_file.close()
         cookies_path = temp_cookie_file.name
         cmd.extend(["--cookies", cookies_path])
-    else:
-        # Fallback to client spoofing if cookies aren't set
-        cmd.extend(["--extractor-args", "youtube:player_client=android,web"])
 
     cmd.append(url)
 
@@ -156,7 +162,7 @@ def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
         if not vtt_content.strip():
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="No English transcripts/subtitles available for this video."
+                detail="No English transcripts available for this video."
             )
 
         formatted_transcript = []
@@ -175,8 +181,7 @@ def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
             elif len(parts) == 2:
                 total_duration = max(total_duration, parts[0] * 60 + parts[1])
 
-        full_text = "\n".join(formatted_transcript)
-        return full_text, total_duration
+        return "\n".join(formatted_transcript), total_duration
 
     except subprocess.CalledProcessError as e:
         raise HTTPException(
@@ -184,7 +189,6 @@ def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
             detail=f"yt-dlp failed to fetch transcript: {e.stderr or str(e)}"
         )
     finally:
-        # Cleanup temporary cookie file after execution
         if cookies_path and os.path.exists(cookies_path):
             os.remove(cookies_path)
 
