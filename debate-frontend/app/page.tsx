@@ -43,7 +43,7 @@ export default function Home() {
     }, 400);
 
     try {
-      const response = await axios.post('http://127.0.0.1:8000/analyze-debate', {
+      const response = await axios.post('https://dai-dt.onrender.com/analyze-debate', {
         youtube_url: url,
       });
 
