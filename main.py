@@ -123,11 +123,7 @@ def extract_video_id(url_or_id: str) -> str:
 def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
     url = f"https://www.youtube.com/watch?v={video_id}"
 
-    # Path to node executable installed during build step
-    node_path = os.path.abspath("node_bin/bin/node")
-    if not os.path.exists(node_path):
-        node_path = os.path.abspath("node_bin/node")
-
+    cookies_path = None
     cmd = [
         "yt-dlp",
         "--skip-download",
@@ -135,20 +131,21 @@ def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
         "--write-sub",
         "--sub-lang", "en",
         "--sub-format", "vtt",
-        "--extractor-args", "youtube:player_client=android,web,ios",
+        "--extractor-args", "youtube:player_client=android,ios,web",
         "--output", "-",
     ]
 
-    # Explicitly pass JS runtime path to yt-dlp if installed
-    if os.path.exists(node_path):
-        cmd.extend(["--js-runtimes", f"node:{node_path}"])
-
-    cookies_path = None
+    # Process Render's env variable to rebuild line breaks correctly
     cookies_env = os.getenv("YOUTUBE_COOKIES")
     if cookies_env:
-        temp_cookie_file = tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".txt")
-        temp_cookie_file.write(cookies_env)
+        # Convert escaped \n strings or spaces into proper system newlines
+        clean_cookies = cookies_env.replace('\\n', '\n')
+
+        # Write to temp file with newline encoding guaranteed for Linux
+        temp_cookie_file = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt", newline="\n")
+        temp_cookie_file.write(clean_cookies)
         temp_cookie_file.close()
+
         cookies_path = temp_cookie_file.name
         cmd.extend(["--cookies", cookies_path])
 
