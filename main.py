@@ -124,11 +124,11 @@ def extract_video_id(url_or_id: str) -> str:
 
 def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
     """
-    Fetches transcript using YouTubeTranscriptApi and routes through Webshare proxies
+    Fetches transcript using YouTubeTranscriptApi routed through Webshare proxies
     to bypass cloud host IP blocks.
     """
     try:
-        # Check for multiple Webshare credentials in format: user1:pass1,user2:pass2
+        # 1. Check for multiple Webshare credentials (user1:pass1,user2:pass2)
         credentials_env = os.getenv("WEBSHARE_CREDENTIALS")
         selected_user = None
         selected_pass = None
@@ -138,12 +138,12 @@ def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
             if cred_pairs:
                 selected_user, selected_pass = random.choice(cred_pairs)
 
-        # Fallback to single username/password env vars
+        # 2. Fallback to single WEBSHARE_USERNAME / WEBSHARE_PASSWORD env vars
         if not selected_user or not selected_pass:
             selected_user = os.getenv("WEBSHARE_USERNAME")
             selected_pass = os.getenv("WEBSHARE_PASSWORD")
 
-        # Initialize API with proxy configuration if credentials exist
+        # 3. Instantiate API with Webshare Proxy Config if credentials exist
         if selected_user and selected_pass:
             proxy_config = WebshareProxyConfig(
                 proxy_username=selected_user,
@@ -153,20 +153,17 @@ def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
         else:
             ytt_api = YouTubeTranscriptApi()
 
-        # Fetch raw transcript data list
+        # 4. Fetch the transcript entries
         transcript_data = ytt_api.fetch(video_id, languages=['en', 'en-US'])
 
-        # If fetch returns a FetchedTranscript object, convert to raw list
-        if hasattr(transcript_data, "fetch"):
-            raw_entries = transcript_data.fetch()
-        else:
-            raw_entries = transcript_data
+        # Handle FetchedTranscript object or raw list
+        raw_entries = transcript_data.fetch() if hasattr(transcript_data, "fetch") else transcript_data
 
         formatted_lines = []
         total_duration = 0.0
 
         for item in raw_entries:
-            # Safely handle dictionary or object attributes
+            # Handle dictionary or object attributes safely
             start_sec = item['start'] if isinstance(item, dict) else item.start
             duration = item.get('duration', 0.0) if isinstance(item, dict) else getattr(item, 'duration', 0.0)
             text_val = item['text'] if isinstance(item, dict) else item.text
@@ -187,7 +184,7 @@ def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
         if not formatted_lines:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Transcript was empty for this video."
+                detail="Transcript returned empty content for this video."
             )
 
         return "\n".join(formatted_lines), total_duration
