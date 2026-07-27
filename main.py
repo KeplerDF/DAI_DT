@@ -133,14 +133,16 @@ def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
             timeout=15
         )
 
-        if response.status_code == 404:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="No transcripts available for this video."
-            )
-
         response.raise_for_status()
         data = response.json()
+
+        # Check if Vercel caught a YouTube/library error
+        if not data.get("success", False) and "error" in data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Vercel Proxy Error: {data['error']}"
+            )
+
         raw_entries = data.get("entries", [])
 
         if not raw_entries:
