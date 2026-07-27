@@ -123,48 +123,39 @@ def extract_video_id(url_or_id: str) -> str:
 
 
 def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
-    """
-    Fetches transcript using YouTubeTranscriptApi routed through Webshare proxies
-    to bypass cloud host IP blocks.
-    """
     try:
-        # 1. Check for multiple Webshare credentials (user1:pass1,user2:pass2)
-        credentials_env = os.getenv("WEBSHARE_CREDENTIALS")
-        selected_user = None
-        selected_pass = None
+        username = os.getenv("WEBSHARE_USERNAME")
+        password = os.getenv("WEBSHARE_PASSWORD")
 
-        if credentials_env:
-            cred_pairs = [c.strip().split(":") for c in credentials_env.split(",") if ":" in c]
-            if cred_pairs:
-                selected_user, selected_pass = random.choice(cred_pairs)
-
-        # 2. Fallback to single WEBSHARE_USERNAME / WEBSHARE_PASSWORD env vars
-        if not selected_user or not selected_pass:
-            selected_user = os.getenv("WEBSHARE_USERNAME")
-            selected_pass = os.getenv("WEBSHARE_PASSWORD")
-
-        # 3. Instantiate API with Webshare Proxy Config if credentials exist
-        if selected_user and selected_pass:
+        if username and password:
+            print(f"[INFO] Using Webshare Proxy for user: {username[:3]}***")
             proxy_config = WebshareProxyConfig(
-                proxy_username=selected_user,
-                proxy_password=selected_pass
+                proxy_username=username,
+                proxy_password=password,
+                filter_ip_locations=["us", "de", "gb"]  # Limit to reliable proxy regions
             )
             ytt_api = YouTubeTranscriptApi(proxy_config=proxy_config)
         else:
-            print("[WARNING] WEBSHARE credentials NOT FOUND in env! Making unproxied request...")
+            print("[WARNING] WEBSHARE credentials not found. Attempting direct request...")
             ytt_api = YouTubeTranscriptApi()
 
-        # 4. Fetch the transcript entries
-        transcript_data = ytt_api.fetch(video_id, languages=['en', 'en-US'])
+        # 1. Check available transcripts
+        transcript_list = ytt_api.list(video_id)
 
-        # Handle FetchedTranscript object or raw list
-        raw_entries = transcript_data.fetch() if hasattr(transcript_data, "fetch") else transcript_data
+        # 2. Get English transcript or fallback to translation
+        try:
+            transcript = transcript_list.find_transcript(['en', 'en-US'])
+        except NoTranscriptFound:
+            first_available = next(iter(transcript_list))
+            transcript = first_available.translate('en')
+
+        # 3. Fetch entries
+        raw_entries = transcript.fetch()
 
         formatted_lines = []
         total_duration = 0.0
 
         for item in raw_entries:
-            # Handle dictionary or object attributes safely
             start_sec = item['start'] if isinstance(item, dict) else item.start
             duration = item.get('duration', 0.0) if isinstance(item, dict) else getattr(item, 'duration', 0.0)
             text_val = item['text'] if isinstance(item, dict) else item.text
@@ -182,25 +173,25 @@ def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
             if text_clean:
                 formatted_lines.append(f"[{time_str}] {text_clean}")
 
-        if not formatted_lines:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Transcript returned empty content for this video."
-            )
-
         return "\n".join(formatted_lines), total_duration
 
     except (TranscriptsDisabled, NoTranscriptFound):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No English transcripts available for this video."
+            detail="No transcripts or auto-translations are available for this video."
         )
     except HTTPException:
         raise
     except Exception as e:
+        error_msg = str(e)
+        if "429" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="YouTube proxy rate limit reached (HTTP 429). Please rotate your proxy IP in Webshare or try again shortly."
+            )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch transcript: {str(e)}"
+            detail=f"Failed to fetch transcript: {error_msg}"
         )
 
 
