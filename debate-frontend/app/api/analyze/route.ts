@@ -10,7 +10,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'YouTube URL is required' }, { status: 400 });
     }
 
-    // 1. Fetch transcript on the Next.js server (bypasses browser CORS)
+    // 1. Fetch transcript on Node server (bypasses browser CORS)
     const rawTranscript = await YoutubeTranscript.fetchTranscript(url);
 
     // 2. Format entries with timestamps
@@ -24,7 +24,7 @@ export async function POST(req: Request) {
       })
       .join('\n');
 
-    // 3. Forward transcript to your Render backend
+    // 3. Forward to Render backend
     const renderResponse = await axios.post('https://dai-dt.onrender.com/analyze-debate', {
       youtube_url: url,
       transcript_text: formattedTranscript,
@@ -32,9 +32,9 @@ export async function POST(req: Request) {
 
     return NextResponse.json(renderResponse.data);
   } catch (error: any) {
-    console.error('Analysis error:', error);
+    console.error('API Error:', error);
     return NextResponse.json(
-      { error: error?.response?.data?.detail || error.message || 'Failed to process transcript' },
+      { error: error?.response?.data?.detail || error.message || 'Failed to fetch transcript' },
       { status: 500 }
     );
   }

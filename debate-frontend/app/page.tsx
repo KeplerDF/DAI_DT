@@ -26,7 +26,6 @@ export default function Home() {
     setProgress(5);
     setStatusMessage('Extracting YouTube transcript...');
 
-    // Dynamic progress bar updates during request execution
     const progressInterval = setInterval(() => {
       setProgress((prev) => {
         if (prev < 30) {
@@ -44,30 +43,14 @@ export default function Home() {
     }, 400);
 
     try {
-      // 1. Fetch transcript directly in the browser
-      setStatusMessage('Extracting YouTube transcript...');
-      const rawTranscript = await YoutubeTranscript.fetchTranscript(url);
+      // Call local Next.js API route instead of YouTube directly from browser
+      const response = await axios.post('/api/analyze', { url });
 
-      // 2. Format transcript entries with timestamps
-      const formattedTranscript = rawTranscript.map(item => {
-        const startSec = Math.floor(item.offset / 1000);
-        const minutes = Math.floor(startSec / 60);
-        const seconds = startSec % 60;
-        const timeStr = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-        return `[${timeStr}] ${item.text.replace(/\n/g, ' ')}`;
-      }).join('\n');
-
-      // 3. Send both URL and transcript_text to your Render backend
-      const response = await axios.post('https://dai-dt.onrender.com/analyze-debate', {
-        youtube_url: url,
-        transcript_text: formattedTranscript
-      });
-
-      // Save returned analysis data into state
+      // Save analysis data to state
       setData(response.data);
 
     } catch (err: any) {
-      setError(err?.response?.data?.detail || err?.response?.data?.error || err.message || 'Failed to analyze debate.');
+      setError(err?.response?.data?.error || err?.message || 'Failed to analyze debate.');
     } finally {
       clearInterval(progressInterval);
       setLoading(false);
