@@ -12,14 +12,8 @@ from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 from sqlmodel import Session, select
-from youtube_transcript_api import (
-    YouTubeTranscriptApi,
-    TranscriptsDisabled,
-    NoTranscriptFound,
-)
-from youtube_transcript_api.proxies import WebshareProxyConfig, GenericProxyConfig
 
-from database import engine, create_db_and_tables, get_session
+from database import engine, create_db_and_tables
 from models import Debate
 
 load_dotenv()  # Loads environment variables from .env
@@ -90,8 +84,10 @@ class SpeakerAnalysis(BaseModel):
 class TranscriptLedgerItem(BaseModel):
     timestamp: str = Field(..., description="Formatted timestamp (HH:MM:SS or MM:SS).")
     speaker: str = Field(..., description="Identifier of the speaker who made the statement.")
-    category: str = Field(...,
-                          description="One of: Logical Point (L), Unrebutted Hit (U), Fallacy (F), Insinuation (I)")
+    category: str = Field(
+        ...,
+        description="One of: Logical Point (L), Unrebutted Hit (U), Fallacy (F), Insinuation (I)"
+    )
     quote: str = Field(..., description="Verbatim or close excerpt from transcript.")
     score_change: float = Field(..., description="Numerical score contribution (+3, +2, -2, or -1.5).")
     impact_explanation: str = Field(..., description="Brief, objective explanation of why this point was scored.")
@@ -122,13 +118,17 @@ def extract_video_id(url_or_id: str) -> str:
     )
 
 
-VERCEL_PROXY_URL = os.getenv("VERCEL_PROXY_URL", "https://your-vercel-app-name.vercel.app")
-
 def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
+    vercel_url = os.getenv("VERCEL_PROXY_URL")
+    if not vercel_url:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="VERCEL_PROXY_URL environment variable is not configured."
+        )
+
     try:
-        # Call Vercel microservice
         response = requests.get(
-            VERCEL_PROXY_URL,
+            vercel_url,
             params={"video_id": video_id},
             timeout=15
         )
@@ -212,10 +212,12 @@ async def analyze_debate(request: DebateRequest):
                 transcript_ledger=existing_debate.ledger_data
             )
 
-    # 2. If not found in DB, fetch transcript using youtube-transcript-api
+    # 2. Fetch transcript using Vercel Micro-Proxy
     transcript_text, total_duration = fetch_and_format_transcript(video_id)
 
-    # Immutable evaluation rules fed directly to Gemini
+    # Trim to ~120,000 characters for safety
+    trimmed_transcript = transcript_text[:120000]
+
     system_instruction = """
     You are an objective, impersonal, and analytical debate evaluator. Your task is to analyze transcript text,
     identify distinct speakers, quantify their talk times, and score them using the EXACT mathematical criteria below.
@@ -240,7 +242,7 @@ async def analyze_debate(request: DebateRequest):
     Analyze the following transcript from YouTube Video ID: {video_id}. Total Duration: {total_duration} seconds.
 
     TRANSCRIPT:
-    {transcript_text[:120000]}  # Trimmed to ensure fast processing context window
+    {trimmed_transcript}
     """
 
     try:
