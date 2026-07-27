@@ -4,6 +4,7 @@ import { useState } from 'react';
 import axios from 'axios';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 import { Loader2, Award, Scale, AlertTriangle, MessageSquare } from 'lucide-react';
+import { YoutubeTranscript } from 'youtube-transcript';
 
 // Color palette for charts
 const COLORS = ['#3B82F6', '#EF4444', '#10B981', '#F59E0B', '#8B5CF6'];
@@ -43,25 +44,33 @@ export default function Home() {
     }, 400);
 
     try {
+      // 1. Fetch transcript directly in the browser
+      setStatusMessage('Extracting YouTube transcript...');
+      const rawTranscript = await YoutubeTranscript.fetchTranscript(url);
+
+      // 2. Format transcript entries with timestamps
+      const formattedTranscript = rawTranscript.map(item => {
+        const startSec = Math.floor(item.offset / 1000);
+        const minutes = Math.floor(startSec / 60);
+        const seconds = startSec % 60;
+        const timeStr = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        return `[${timeStr}] ${item.text.replace(/\n/g, ' ')}`;
+      }).join('\n');
+
+      // 3. Send both URL and transcript_text to your Render backend
       const response = await axios.post('https://dai-dt.onrender.com/analyze-debate', {
         youtube_url: url,
+        transcript_text: formattedTranscript
       });
 
-      // Complete bar animation upon receiving output
-      clearInterval(progressInterval);
-      setProgress(100);
-      setStatusMessage('Analysis complete!');
-
-      setTimeout(() => {
-        setData(response.data);
-        setLoading(false);
-      }, 400);
+      // Save returned analysis data into state
+      setData(response.data);
 
     } catch (err: any) {
+      setError(err?.response?.data?.detail || err?.response?.data?.error || err.message || 'Failed to analyze debate.');
+    } finally {
       clearInterval(progressInterval);
       setLoading(false);
-      setProgress(0);
-      setError(err.response?.data?.detail || 'An error occurred while fetching analysis.');
     }
   };
 
