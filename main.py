@@ -2,23 +2,27 @@
 
 import os
 import re
+import random
 from typing import List
 from contextlib import asynccontextmanager
+from fastapi import HTTPException, status, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 from sqlmodel import Session, select
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+from youtube_transcript_api import (
+    YouTubeTranscriptApi,
+    TranscriptsDisabled,
+    NoTranscriptFound,
+)
 from youtube_transcript_api.proxies import WebshareProxyConfig, GenericProxyConfig
-from fastapi import HTTPException, status, FastAPI
-
 
 from database import engine, create_db_and_tables, get_session
 from models import Debate
 
-load_dotenv()  # Loads the GEMINI_API_KEY from .env
+load_dotenv()  # Loads environment variables from .env
 
 
 # -------------------------------------------------------------------
@@ -119,29 +123,54 @@ def extract_video_id(url_or_id: str) -> str:
 
 
 def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
+    """
+    Fetches transcript using YouTubeTranscriptApi and routes through Webshare proxies
+    to bypass cloud host IP blocks.
+    """
     try:
-        username = os.getenv("WEBSHARE_USERNAME")
-        password = os.getenv("WEBSHARE_PASSWORD")
+        # Check for multiple Webshare credentials in format: user1:pass1,user2:pass2
+        credentials_env = os.getenv("WEBSHARE_CREDENTIALS")
+        selected_user = None
+        selected_pass = None
+
+        if credentials_env:
+            cred_pairs = [c.strip().split(":") for c in credentials_env.split(",") if ":" in c]
+            if cred_pairs:
+                selected_user, selected_pass = random.choice(cred_pairs)
+
+        # Fallback to single username/password env vars
+        if not selected_user or not selected_pass:
+            selected_user = os.getenv("WEBSHARE_USERNAME")
+            selected_pass = os.getenv("WEBSHARE_PASSWORD")
 
         # Initialize API with proxy configuration if credentials exist
-        if username and password:
-            ytt_api = YouTubeTranscriptApi(
-                proxy_config=WebshareProxyConfig(
-                    proxy_username=username,
-                    proxy_password=password
-                )
+        if selected_user and selected_pass:
+            proxy_config = WebshareProxyConfig(
+                proxy_username=selected_user,
+                proxy_password=selected_pass
             )
+            ytt_api = YouTubeTranscriptApi(proxy_config=proxy_config)
         else:
             ytt_api = YouTubeTranscriptApi()
 
-        transcript = ytt_api.fetch(video_id, languages=['en', 'en-US'])
+        # Fetch raw transcript data list
+        transcript_data = ytt_api.fetch(video_id, languages=['en', 'en-US'])
+
+        # If fetch returns a FetchedTranscript object, convert to raw list
+        if hasattr(transcript_data, "fetch"):
+            raw_entries = transcript_data.fetch()
+        else:
+            raw_entries = transcript_data
 
         formatted_lines = []
         total_duration = 0.0
 
-        for item in transcript:
-            start_sec = item['start']
-            duration = item.get('duration', 0.0)
+        for item in raw_entries:
+            # Safely handle dictionary or object attributes
+            start_sec = item['start'] if isinstance(item, dict) else item.start
+            duration = item.get('duration', 0.0) if isinstance(item, dict) else getattr(item, 'duration', 0.0)
+            text_val = item['text'] if isinstance(item, dict) else item.text
+
             total_duration = max(total_duration, start_sec + duration)
 
             start_int = int(start_sec)
@@ -151,9 +180,15 @@ def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
 
             time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}" if hours > 0 else f"{minutes:02d}:{seconds:02d}"
 
-            text_clean = item['text'].replace('\n', ' ').strip()
+            text_clean = text_val.replace('\n', ' ').strip()
             if text_clean:
                 formatted_lines.append(f"[{time_str}] {text_clean}")
+
+        if not formatted_lines:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Transcript was empty for this video."
+            )
 
         return "\n".join(formatted_lines), total_duration
 
@@ -162,6 +197,8 @@ def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No English transcripts available for this video."
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -200,7 +237,7 @@ async def analyze_debate(request: DebateRequest):
                 transcript_ledger=existing_debate.ledger_data
             )
 
-    # 2. If not found in DB, fetch transcript using yt-dlp and call Gemini
+    # 2. If not found in DB, fetch transcript using youtube-transcript-api
     transcript_text, total_duration = fetch_and_format_transcript(video_id)
 
     # Immutable evaluation rules fed directly to Gemini
