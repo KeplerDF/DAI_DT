@@ -2,8 +2,7 @@
 
 import os
 import re
-import requests
-from typing import List
+from typing import List, Optional
 from contextlib import asynccontextmanager
 from fastapi import HTTPException, status, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -62,6 +61,10 @@ class DebateRequest(BaseModel):
         example="https://www.youtube.com/watch?v=pb9VfCG7_XU",
         description="Full YouTube URL or video ID."
     )
+    transcript_text: str = Field(
+        ...,
+        description="Pre-fetched timestamped transcript text directly from frontend."
+    )
 
 
 class SpeakerMetrics(BaseModel):
@@ -118,69 +121,18 @@ def extract_video_id(url_or_id: str) -> str:
     )
 
 
-def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
-    vercel_url = os.getenv("VERCEL_PROXY_URL")
-    if not vercel_url:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="VERCEL_PROXY_URL environment variable is not configured."
-        )
+def estimate_duration_from_transcript(transcript: str) -> float:
+    """Parses timestamps in [MM:SS] or [HH:MM:SS] format to estimate total video duration."""
+    matches = re.findall(r"\[(\d{1,2}:)?(\d{2}):(\d{2})\]", transcript)
+    if not matches:
+        return 0.0
 
-    try:
-        response = requests.get(
-            vercel_url,
-            params={"video_id": video_id},
-            timeout=15
-        )
+    last_match = matches[-1]
+    hours = int(last_match[0].replace(":", "")) if last_match[0] else 0
+    minutes = int(last_match[1])
+    seconds = int(last_match[2])
 
-        response.raise_for_status()
-        data = response.json()
-
-        # Check if Vercel caught a YouTube/library error
-        if not data.get("success", False) and "error" in data:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Vercel Proxy Error: {data['error']}"
-            )
-
-        raw_entries = data.get("entries", [])
-
-        if not raw_entries:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Transcript payload was empty."
-            )
-
-        formatted_lines = []
-        total_duration = 0.0
-
-        for item in raw_entries:
-            start_sec = item['start']
-            duration = item.get('duration', 0.0)
-            text_val = item['text']
-
-            total_duration = max(total_duration, start_sec + duration)
-
-            start_int = int(start_sec)
-            hours = start_int // 3600
-            minutes = (start_int % 3600) // 60
-            seconds = start_int % 60
-
-            time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}" if hours > 0 else f"{minutes:02d}:{seconds:02d}"
-
-            text_clean = text_val.replace('\n', ' ').strip()
-            if text_clean:
-                formatted_lines.append(f"[{time_str}] {text_clean}")
-
-        return "\n".join(formatted_lines), total_duration
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Vercel proxy request failed: {str(e)}"
-        )
+    return float(hours * 3600 + minutes * 60 + seconds)
 
 
 # -------------------------------------------------------------------
@@ -195,9 +147,15 @@ def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
 )
 async def analyze_debate(request: DebateRequest):
     """
-    Accepts a YouTube link, fetches timestamped captions, and evaluates debate participants
+    Accepts a YouTube link and pre-fetched timestamped transcript, evaluating debate participants
     quantitatively using strict mathematical metrics and Gemini structured output.
     """
+    if not request.transcript_text.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Transcript text cannot be empty."
+        )
+
     video_id = extract_video_id(request.youtube_url)
 
     # 1. Check if video has already been analyzed in the database
@@ -214,11 +172,11 @@ async def analyze_debate(request: DebateRequest):
                 transcript_ledger=existing_debate.ledger_data
             )
 
-    # 2. Fetch transcript using Vercel Micro-Proxy
-    transcript_text, total_duration = fetch_and_format_transcript(video_id)
+    # 2. Extract total duration from formatted transcript
+    total_duration = estimate_duration_from_transcript(request.transcript_text)
 
     # Trim to ~120,000 characters for safety
-    trimmed_transcript = transcript_text[:120000]
+    trimmed_transcript = request.transcript_text[:120000]
 
     system_instruction = """
     You are an objective, impersonal, and analytical debate evaluator. Your task is to analyze transcript text,
