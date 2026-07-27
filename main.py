@@ -2,7 +2,7 @@
 
 import os
 import re
-import random
+import requests
 from typing import List
 from contextlib import asynccontextmanager
 from fastapi import HTTPException, status, FastAPI
@@ -122,43 +122,40 @@ def extract_video_id(url_or_id: str) -> str:
     )
 
 
+VERCEL_PROXY_URL = os.getenv("VERCEL_PROXY_URL", "https://your-vercel-app-name.vercel.app")
+
 def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
     try:
-        username = os.getenv("WEBSHARE_USERNAME")
-        password = os.getenv("WEBSHARE_PASSWORD")
+        # Call Vercel microservice
+        response = requests.get(
+            VERCEL_PROXY_URL,
+            params={"video_id": video_id},
+            timeout=15
+        )
 
-        if username and password:
-            print(f"[INFO] Using Webshare Proxy for user: {username[:3]}***")
-            proxy_config = WebshareProxyConfig(
-                proxy_username=username,
-                proxy_password=password,
-                filter_ip_locations=["us", "de", "gb"]  # Limit to reliable proxy regions
+        if response.status_code == 404:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No transcripts available for this video."
             )
-            ytt_api = YouTubeTranscriptApi(proxy_config=proxy_config)
-        else:
-            print("[WARNING] WEBSHARE credentials not found. Attempting direct request...")
-            ytt_api = YouTubeTranscriptApi()
 
-        # 1. Check available transcripts
-        transcript_list = ytt_api.list(video_id)
+        response.raise_for_status()
+        data = response.json()
+        raw_entries = data.get("entries", [])
 
-        # 2. Get English transcript or fallback to translation
-        try:
-            transcript = transcript_list.find_transcript(['en', 'en-US'])
-        except NoTranscriptFound:
-            first_available = next(iter(transcript_list))
-            transcript = first_available.translate('en')
-
-        # 3. Fetch entries
-        raw_entries = transcript.fetch()
+        if not raw_entries:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Transcript payload was empty."
+            )
 
         formatted_lines = []
         total_duration = 0.0
 
         for item in raw_entries:
-            start_sec = item['start'] if isinstance(item, dict) else item.start
-            duration = item.get('duration', 0.0) if isinstance(item, dict) else getattr(item, 'duration', 0.0)
-            text_val = item['text'] if isinstance(item, dict) else item.text
+            start_sec = item['start']
+            duration = item.get('duration', 0.0)
+            text_val = item['text']
 
             total_duration = max(total_duration, start_sec + duration)
 
@@ -175,23 +172,12 @@ def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
 
         return "\n".join(formatted_lines), total_duration
 
-    except (TranscriptsDisabled, NoTranscriptFound):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No transcripts or auto-translations are available for this video."
-        )
     except HTTPException:
         raise
     except Exception as e:
-        error_msg = str(e)
-        if "429" in error_msg:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="YouTube proxy rate limit reached (HTTP 429). Please rotate your proxy IP in Webshare or try again shortly."
-            )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch transcript: {error_msg}"
+            detail=f"Vercel proxy request failed: {str(e)}"
         )
 
 
