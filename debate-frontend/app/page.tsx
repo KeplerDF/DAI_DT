@@ -4,7 +4,6 @@ import { useState } from 'react';
 import axios from 'axios';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 import { Loader2, Award, Scale, AlertTriangle, MessageSquare } from 'lucide-react';
-import { YoutubeTranscript } from 'youtube-transcript';
 
 // Color palette for charts
 const COLORS = ['#3B82F6', '#EF4444', '#10B981', '#F59E0B', '#8B5CF6'];
