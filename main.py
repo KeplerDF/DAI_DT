@@ -151,6 +151,7 @@ def fetch_and_format_transcript(video_id: str) -> tuple[str, float]:
             )
             ytt_api = YouTubeTranscriptApi(proxy_config=proxy_config)
         else:
+            print("[WARNING] WEBSHARE credentials NOT FOUND in env! Making unproxied request...")
             ytt_api = YouTubeTranscriptApi()
 
         # 4. Fetch the transcript entries
