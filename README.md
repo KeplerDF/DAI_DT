@@ -59,3 +59,93 @@ Make sure you have the following installed on your system:
 ```bash
 git clone [https://github.com/keplerdf/DAI_DT.git](https://github.com/keplerdf/DAI_DT.git)
 cd DAI_DT
+```
+
+---
+
+### 2. Backend Setup (FastAPI)
+
+1. **Create and activate a Python virtual environment:**
+
+   *On Windows (Git Bash/PowerShell):*
+   ```bash
+   python -m venv .venv
+   source .venv/Scripts/activate  # In PowerShell: .venv\Scripts\Activate.ps1
+   ```
+
+   *On macOS / Linux:*
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
+
+2. **Install Python dependencies:**
+   ```bash
+   pip install fastapi uvicorn sqlmodel google-genai python-dotenv pydantic
+   ```
+
+3. **Configure Environment Variables:**
+   Create a `.env` file in the project **root directory** (`DAI_DT/.env`):
+
+   ```env
+   GEMINI_API_KEY=your_gemini_api_key_here
+   ```
+
+4. **Start the FastAPI Backend Server:**
+   ```bash
+   uvicorn main:app --reload --port 8000
+   ```
+
+   The backend API will start at: `http://localhost:8000`  
+   *You can view the interactive OpenAPI documentation at `http://localhost:8000/docs`.*
+
+---
+
+### 3. Frontend Setup (Next.js)
+
+1. **Navigate to the frontend directory:**
+   ```bash
+   cd debate-frontend
+   ```
+
+2. **Install Node modules:**
+   ```bash
+   npm install
+   ```
+
+3. **Configure Local Next.js API Route:**
+   Ensure `debate-frontend/app/api/analyze/route.ts` points to your **local backend** (`http://localhost:8000/analyze-debate`):
+
+   ```typescript
+   // In debate-frontend/app/api/analyze/route.ts
+   const renderResponse = await axios.post('http://localhost:8000/analyze-debate', {
+     youtube_url: url,
+     transcript_text: formattedTranscript,
+   });
+   ```
+
+4. **Start the Next.js Development Server:**
+   ```bash
+   npm run dev
+   ```
+
+5. **Open the App:**  
+   Navigate to `http://localhost:3000` in your web browser.
+
+---
+
+## 📋 How to Use
+
+1. Copy any public **YouTube debate or discussion URL** (e.g., `https://www.youtube.com/watch?v=pb9VfCG7_XU`).
+2. Paste the link into the **Debate Analytics Dashboard** input bar.
+3. Click **Analyze**.
+4. Watch real-time status updates as the transcript is parsed and passed to the Gemini model.
+5. Review the generated analytics:
+   - **Speaker Breakdown:** Net Scores, Integrity Ratios, and Talk Times.
+   - **Transcript Ledger:** Chronological breakdown with timestamps, quotes, categorization, and logical impact descriptions.
+
+---
+
+## 📄 License
+
+This project is open-source and available under the [MIT License](LICENSE).
